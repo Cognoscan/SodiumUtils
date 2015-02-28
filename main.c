@@ -6,8 +6,10 @@ static const unsigned char sigma[16] = {
   'e', 'x', 'p', 'a', 'n', 'd', ' ', '3', '2', '-', 'b', 'y', 't', 'e', ' ', 'k'
 };
 
-int EncryptFile(char *filename, char *privatefile, char *publicfile);
-int DecryptFile(char *filename, char *privatefile, char *publicfile);
+int LoadsecretKeyFromFile(unsigned char *secretKey, char *filename);
+int LoadPublicKeyFromFile(unsigned char *publicKey, char *filename);
+int EncryptFile(char *filename, char *secretFile, char *publicfile);
+int DecryptFile(char *filename, char *secretFile, char *publicfile);
 int GenerateKey(char *name);
 void PrintUsage();
 
@@ -50,7 +52,7 @@ int main(int argc, char *argv[])
       break;
     case CMD_ENCRYPT:
       if (argc < 5) {
-        printf("Need file, private key file, and public key file\n\n");
+        printf("Need file, secret key file, and public key file\n\n");
         PrintUsage();
         return 1;
       }
@@ -58,7 +60,7 @@ int main(int argc, char *argv[])
       break;
     case CMD_DECRYPT:
       if (argc < 5) {
-        printf("Need file, private key file, and public key file\n\n");
+        printf("Need file, secret key file, and public key file\n\n");
         PrintUsage();
         return 1;
       }
@@ -69,15 +71,15 @@ int main(int argc, char *argv[])
   return 0;
 }
 
-// EncryptFile - Encrypt file filename with key in public file, signing with key in privatefile {{{
-int EncryptFile(char *filename, char *privatefile, char *publicfile)
+// EncryptFile - Encrypt file filename with key in public file, signing with key in secretFile {{{
+int EncryptFile(char *filename, char *secretFile, char *publicfile)
 {
   int ret = 0;
   char *outFilename = malloc(strlen(filename) + 11);
   FILE *f;
   FILE *outFile;
   unsigned char publickey[crypto_box_PUBLICKEYBYTES];
-  unsigned char privatekey[crypto_box_SECRETKEYBYTES];
+  unsigned char secretKey[crypto_box_SECRETKEYBYTES];
   // Load Public Key
   f = fopen(publicfile, "rb");
   if (f == NULL) {
@@ -91,15 +93,15 @@ int EncryptFile(char *filename, char *privatefile, char *publicfile)
   }
   fclose(f);
 
-  // Load Private Key
-  f = fopen(privatefile, "rb");
+  // Load Secret Key
+  f = fopen(secretFile, "rb");
   if (f == NULL) {
-    printf("Failed to open file %s for loading private key\n", privatefile);
+    printf("Failed to open file %s for loading secret key\n", secretFile);
     ret = 1;
   } else {
-    if (fread(privatekey, sizeof(char), crypto_box_SECRETKEYBYTES, f) < crypto_box_SECRETKEYBYTES) {
+    if (fread(secretKey, sizeof(char), crypto_box_SECRETKEYBYTES, f) < crypto_box_SECRETKEYBYTES) {
       ret = 1;
-      printf("Failed to read private key from %s\n", privatefile);
+      printf("Failed to read secret key from %s\n", secretFile);
     }
   }
   fclose(f);
@@ -134,7 +136,7 @@ int EncryptFile(char *filename, char *privatefile, char *publicfile)
     randombytes_buf(fileKey, sizeof fileKey);
     memcpy((void *)fileKeyCipher, (void *)fileKey, sizeof fileKey);
     memcpy((void *)fileKeyCipher + sizeof fileKey, (void *)fileNonce, sizeof fileNonce);
-    crypto_box_easy(fileKeyCipher, fileKeyCipher, sizeof fileKey + sizeof fileNonce, keyNonce, publickey, privatekey);
+    crypto_box_easy(fileKeyCipher, fileKeyCipher, sizeof fileKey + sizeof fileNonce, keyNonce, publickey, secretKey);
     fputc(1, outFile); // Version 1 of Cipher
     fwrite((void *)keyNonce, sizeof(char), sizeof keyNonce, outFile);
     fwrite((void *)fileKeyCipher, sizeof(char), sizeof fileKeyCipher, outFile);
@@ -160,21 +162,21 @@ int EncryptFile(char *filename, char *privatefile, char *publicfile)
   sodium_memzero(fileKeyCipher, sizeof fileKeyCipher);
   sodium_memzero(keyNonce, sizeof keyNonce);
   sodium_memzero(fileKey, sizeof fileKey);
-  sodium_memzero(privatekey, sizeof privatekey);
+  sodium_memzero(secretKey, sizeof secretKey);
   free(outFilename);
   return ret;
 }
 //}}}
 
-// DecryptFile - Decrypt file filename with key in privatefile, verifying with key in publicfile {{{
-int DecryptFile(char *filename, char *privatefile, char *publicfile)
+// DecryptFile - Decrypt file filename with key in secretFile, verifying with key in publicfile {{{
+int DecryptFile(char *filename, char *secretFile, char *publicfile)
 {
   int ret = 0;
   char *outFilename = malloc(strlen(filename) + 11);
   FILE *f;
   FILE *outFile;
   unsigned char publickey[crypto_box_PUBLICKEYBYTES];
-  unsigned char privatekey[crypto_box_SECRETKEYBYTES];
+  unsigned char secretKey[crypto_box_SECRETKEYBYTES];
   // Load Public Key
   f = fopen(publicfile, "rb");
   if (f == NULL) {
@@ -188,15 +190,15 @@ int DecryptFile(char *filename, char *privatefile, char *publicfile)
   }
   fclose(f);
 
-  // Load Private Key
-  f = fopen(privatefile, "rb");
+  // Load Secret Key
+  f = fopen(secretFile, "rb");
   if (f == NULL) {
-    printf("Failed to open file %s for loading private key\n", privatefile);
+    printf("Failed to open file %s for loading secret key\n", secretFile);
     ret = 1;
   } else {
-    if (fread(privatekey, sizeof(char), crypto_box_SECRETKEYBYTES, f) < crypto_box_SECRETKEYBYTES) {
+    if (fread(secretKey, sizeof(char), crypto_box_SECRETKEYBYTES, f) < crypto_box_SECRETKEYBYTES) {
       ret = 1;
-      printf("Failed to read private key from %s\n", privatefile);
+      printf("Failed to read secret key from %s\n", secretFile);
     }
   }
   fclose(f);
@@ -234,7 +236,7 @@ int DecryptFile(char *filename, char *privatefile, char *publicfile)
     fread((void *)keyNonce, sizeof(char), sizeof keyNonce, f);
     fread((void *)fileKeyCipher, sizeof(char), sizeof fileKeyCipher, f);
     if (crypto_box_open_easy(fileKeyCipher, fileKeyCipher, sizeof fileKeyCipher, keyNonce,
-          publickey, privatekey) != 0) {
+          publickey, secretKey) != 0) {
       printf("Authentication failed! Does not match with public key provided.\n");
     }
     memcpy((void *)fileKey, (void *)fileKeyCipher, sizeof fileKey);
@@ -261,7 +263,7 @@ int DecryptFile(char *filename, char *privatefile, char *publicfile)
   sodium_memzero(fileKeyCipher, sizeof fileKeyCipher);
   sodium_memzero(keyNonce, sizeof keyNonce);
   sodium_memzero(fileKey, sizeof fileKey);
-  sodium_memzero(privatekey, sizeof privatekey);
+  sodium_memzero(secretKey, sizeof secretKey);
   free(outFilename);
   return ret;
 }
@@ -272,24 +274,24 @@ int GenerateKey(char *name)
 {
   int ret;
   unsigned char publickey[crypto_box_PUBLICKEYBYTES];
-  unsigned char privatekey[crypto_box_SECRETKEYBYTES];
-  char *filename = malloc(strlen(name) + 12); // .PRIVATEKEY + 1
+  unsigned char secretKey[crypto_box_SECRETKEYBYTES];
+  char *filename = malloc(strlen(name) + 12); // .secretKey + 1
   FILE *f;
   // Generate Keypair
-  ret = crypto_box_keypair(publickey, privatekey);
+  ret = crypto_box_keypair(publickey, secretKey);
   if (ret != 0) {
     printf("Failed to generate keypair\n");
   }
-  // Write Private Key
+  // Write Secret Key
   if (ret == 0) {
     strcpy(filename, name);
-    strcat(filename, ".privatekey");
+    strcat(filename, ".secretKey");
     f = fopen(filename, "wb");
     if (f == NULL) {
       ret = 1;
       printf("Could not open %s for writing\n", filename);
     } else {
-      fwrite((void *)privatekey, sizeof(char), crypto_box_SECRETKEYBYTES, f);
+      fwrite((void *)secretKey, sizeof(char), crypto_box_SECRETKEYBYTES, f);
       fclose(f);
     }
   }
@@ -310,7 +312,7 @@ int GenerateKey(char *name)
   if (ret == 0) {
     printf("Generated keypair %s\n", name);
   }
-  sodium_memzero(privatekey, sizeof privatekey);
+  sodium_memzero(secretKey, sizeof secretKey);
   free(filename);
   return ret;
 }
@@ -321,11 +323,11 @@ void PrintUsage() {
     printf(
         "Usage:\n"
         "cryptid genkey [NAME] - Generate key named NAME\n"
-        "    Generate a public and private key\n"
-        "cryptid encrypt FILE PRIVATEKEY PUBLICKEY\n"
-        "    Encrypt FILE using PUBLICKEY file and sign it using PRIVATEKEY\n"
-        "cryptid decrypt FILE PRIVATEKEY PUBLICKEY\n"
-        "    Decrypt FILE using PRIVATEKEY file, checking signature against PUBLICKEY\n"
+        "    Generate a public and secret key\n"
+        "cryptid encrypt FILE secretKey PUBLICKEY\n"
+        "    Encrypt FILE using PUBLICKEY file and sign it using secretKey\n"
+        "cryptid decrypt FILE secretKey PUBLICKEY\n"
+        "    Decrypt FILE using secretKey file, checking signature against PUBLICKEY\n"
         );
 }
 //}}}
