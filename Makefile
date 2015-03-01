@@ -1,5 +1,5 @@
-CFLAGS=$(shell pkg-config --cflags libsodium)
-LDFLAGS=$(shell pkg-config --libs libsodium)
+CFLAGS=$(shell pkg-config --cflags libsodium) -std=c11
+LDFLAGS=$(shell pkg-config --libs libsodium) -std=c11
 	
 SRCS=main.c
 OBJS=$(subst .c,.o,$(SRCS))

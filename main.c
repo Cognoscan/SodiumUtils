@@ -155,6 +155,10 @@ int EncryptFile(char *filename, unsigned char *secretKey, unsigned char *publicK
   unsigned char readSize;
   uint64_t ic;
   unsigned char subkey[32];
+  crypto_onetimeauth_state hmac_state;
+  unsigned char hmac_out[crypto_onetimeauth_BYTES];
+  memset((void *)hmac_out, 0, sizeof hmac_out);
+  fpos_t hmacPosition; // Location of HMAC in output file
   if (ret == 0) {
 
     // Create Symmetric Key and necessary nonces
@@ -167,24 +171,38 @@ int EncryptFile(char *filename, unsigned char *secretKey, unsigned char *publicK
         sizeof fileKey + sizeof fileNonce,
         keyNonce, publicKey, secretKey);
     // Write Version, keyNonce, and encrypted & signed Symmetric key and nonce
+    // HEADER:
+    // 1 byte - Version Number
+    // crypto_box_NONCEBYTES - Nonce for crypto_box portion
+    // crypto_secretbox_MACBYTES - Message authentication for crypto_box portion
+    // + crypto_stream_NONCEBYTES - encrypted nonce used in file encryption
+    // + crypto_stream_KEYBYTES - encrypted key used in file encryption
+    // crypto_onetimeauth_BYTES - Message authentication for encrypted file
     fputc(1, outFile); // Version 1 of Cipher
     fwrite((void *)keyNonce, sizeof(char), sizeof keyNonce, outFile);
     fwrite((void *)fileKeyCipher, sizeof(char), sizeof fileKeyCipher, outFile);
+    fgetpos(outFile, &hmacPosition);
+    fwrite((void *)hmac_out, sizeof(char), sizeof hmac_out, outFile); // Fill this out at end of encryption
 
     // Actually perform file stream encryption
-    // TODO: Add HMAC at the end of the stream
-    crypto_core_hsalsa20(subkey, fileNonce, fileKey, sigma);
+    ret |= crypto_onetimeauth_init(&hmac_state, fileKey);
+    ret |= crypto_core_hsalsa20(subkey, fileNonce, fileKey, sigma);
     ic = 0;
     readSize = fread((void *)block, sizeof(char), sizeof block, f);
     while (readSize > 0)
     {
-      // WATCH OUT: I'm using crypto_steam_xor_ic here. I *think* I know 
-      // what I'm doing, but I'm honestly not positive this is a secure way to 
-      // process a file stream
-      crypto_stream_salsa20_xor_ic(block, block, readSize, fileNonce+16, ic, subkey);
+      ret |= crypto_stream_salsa20_xor_ic(block, block, readSize, fileNonce+16, ic, subkey);
+      ret |= crypto_onetimeauth_update(&hmac_state, block, readSize); // Do HMAC on ciphertext
       ic++;
       fwrite((void *)block, sizeof(char), readSize, outFile);
       readSize = fread((void *)block, sizeof(char), sizeof block, f);
+    }
+    ret |= crypto_onetimeauth_final(&hmac_state, hmac_out);
+    ret |= fsetpos(outFile, &hmacPosition);
+    fwrite((void *)hmac_out, sizeof(char), sizeof hmac_out, outFile);
+
+    if (ret != 0) {
+      printf("Something went wrong while encrypting! But I don't know where...\n");
     }
   }
   
@@ -245,6 +263,9 @@ int DecryptFile(char *filename, unsigned char *secretKey, unsigned char *publicK
   uint64_t ic;
   unsigned char subkey[32];
   int version;
+  crypto_onetimeauth_state hmac_state;
+  unsigned char hmac_in[crypto_onetimeauth_BYTES];
+  unsigned char computed_hmac[crypto_onetimeauth_BYTES];
   if (ret == 0) {
 
     // Fetch version, nonce for encrypted file key, and encrypted file key & file nonce
@@ -260,20 +281,31 @@ int DecryptFile(char *filename, unsigned char *secretKey, unsigned char *publicK
     }
     memcpy((void *)fileKey, (void *)fileKeyCipher, sizeof fileKey);
     memcpy((void *)fileNonce, (void *)fileKeyCipher + sizeof fileKey, sizeof fileNonce);
+    fread((void *)hmac_in, sizeof(char), sizeof hmac_in, f);
 
     // Actually perform the stream decryption of the file
-    crypto_core_hsalsa20(subkey, fileNonce, fileKey, sigma);
+    ret |= crypto_onetimeauth_init(&hmac_state, fileKey);
+    ret |= crypto_core_hsalsa20(subkey, fileNonce, fileKey, sigma);
     ic = 0;
     readSize = fread((void *)block, sizeof(char), sizeof block, f);
     while (readSize > 0)
     {
-      // WATCH OUT: I'm using crypto_steam_xor_ic here. I *think* I know 
-      // what I'm doing, but I'm honestly not positive this is a secure way to 
-      // process a file stream
-      crypto_stream_salsa20_xor_ic(block, block, readSize, fileNonce+16, ic, subkey);
+      ret |= crypto_onetimeauth_update(&hmac_state, block, readSize); // Do HMAC on ciphertext
+      ret |= crypto_stream_salsa20_xor_ic(block, block, readSize, fileNonce+16, ic, subkey);
       ic++;
       fwrite((void *)block, sizeof(char), readSize, outFile);
       readSize = fread((void *)block, sizeof(char), sizeof block, f);
+    }
+
+    ret |= crypto_onetimeauth_final(&hmac_state, computed_hmac);
+
+    if (ret != 0) {
+      printf("Something went wrong while decrypting! But I don't know where...\n");
+    }
+
+    if (crypto_verify_16(hmac_in, computed_hmac) != 0) {
+      ret = 1;
+      printf("File stream did not pass authentication! It has been tampered with!\n");
     }
   }
 
